@@ -41,7 +41,7 @@ async function generateSmartAI(prompt) {
       // Get current key (using modulo to loop back to 0 if needed)
       const key = apiKeys[(currentKeyIndex + i) % apiKeys.length];
       const genAI = new GoogleGenerativeAI(key);
-      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
       
       const result = await model.generateContent(prompt);
       return result.response.text();
@@ -319,3 +319,4 @@ async function start() {
 
 app.listen(PORT, () => console.log(`🌍 Server on port ${PORT}`));
 start();
+
