@@ -118,7 +118,7 @@ if (API_KEY) {
   try {
     const genAI = new GoogleGenerativeAI(API_KEY);
     model = genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
+      model: 'gemini-flash-preview',
       systemInstruction: `You are a WhatsApp assistant. No LaTeX. Use Unicode for math.`
     });
     console.log('✅ Gemini AI initialized');
@@ -211,3 +211,4 @@ async function connectToWhatsApp() {
 // ==================== START ====================
 app.listen(PORT, () => console.log(`🌍 Server running on port ${PORT}`));
 connectToWhatsApp();
+
