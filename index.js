@@ -15,15 +15,13 @@ const fs = require('fs');
 // ==================== CONFIGURATION ====================
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY; 
-const OWNER_NUMBER = "917001747616@s.whatsapp.net"; // Your Number
 const AUTH_FOLDER = './auth_info';
 const DB_FILE = './database.json';
 
-// ==================== DATABASE SYSTEM (Credits & Knowledge) ====================
-// This simple system saves data to a file so it remembers credits and saved items.
+// ==================== DATABASE (Credits & Memory) ====================
 let db = {
-  users: {},      // Stores credits: { "123@s.whatsapp.net": 5 }
-  knowledge: {}   // Stores saved info: { "wifi_pass": "123456" }
+  users: {},      
+  knowledge: {}   
 };
 
 // Load Database
@@ -35,17 +33,17 @@ function saveDB() {
   fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
 }
 
-// Helper: Get Credits
-function getCredits(user) {
-  if (user === OWNER_NUMBER) return 999999; // Owner is infinite
-  if (!db.users[user]) db.users[user] = { credits: 1 }; // Default 1 free credit
+// 1. Get Credits (Owner is Unlimited)
+function getCredits(user, isOwner) {
+  if (isOwner) return "UNLIMITED"; 
+  if (!db.users[user]) db.users[user] = { credits: 1 }; // 1 Free Credit for strangers
   return db.users[user].credits;
 }
 
-// Helper: Use Credit
-function useCredit(user) {
-  if (user === OWNER_NUMBER) return true;
-  if (getCredits(user) > 0) {
+// 2. Use Credit (Owner bypasses)
+function useCredit(user, isOwner) {
+  if (isOwner) return true; // Owner never uses credits
+  if (getCredits(user, false) > 0) {
     db.users[user].credits -= 1;
     saveDB();
     return true;
@@ -53,18 +51,19 @@ function useCredit(user) {
   return false;
 }
 
-// ==================== GLOBAL STATE ====================
+// ==================== SERVER & STATE ====================
+const app = express();
 let sock = null;
 let qrDataURL = null;
 let connectionStatus = 'Disconnected';
-const app = express();
+let ownerJid = null; // Will be auto-filled on login
 
-// ==================== WEB SERVER ====================
 app.get('/', (req, res) => res.send(`
   <html><head><meta http-equiv="refresh" content="5"></head>
   <body style="text-align:center; padding:50px; font-family:sans-serif;">
-    <h1>🤖 Meraj Ultimate Bot</h1>
+    <h1>🤖 Meraj Auto-Bot</h1>
     <p>Status: <strong>${connectionStatus}</strong></p>
+    <p>Owner: <strong>${ownerJid ? "✅ Detected" : "Waiting..."}</strong></p>
     ${connectionStatus !== 'Connected' ? '<a href="/qr">Scan QR</a>' : '✅ System Online'}
   </body></html>
 `));
@@ -77,7 +76,7 @@ app.get('/qr', (req, res) => {
   }
 });
 
-// ==================== CORE BOT LOGIC ====================
+// ==================== BOT LOGIC ====================
 async function start() {
   if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER);
   
@@ -88,7 +87,7 @@ async function start() {
     version,
     printQRInTerminal: false,
     auth: { creds: state.creds, keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' })) },
-    logger: pino({ level: 'silent' }), // Clean logs
+    logger: pino({ level: 'silent' }),
     browser: Browsers.ubuntu('Chrome'),
     connectTimeoutMs: 60000,
   });
@@ -106,15 +105,25 @@ async function start() {
       const reason = lastDisconnect?.error?.output?.statusCode;
       console.log(`⚠️ Connection closed: ${reason}`);
       connectionStatus = 'Disconnected';
-      // ONLY Wipe if actually logged out (401)
+      // Only wipe if logged out (401)
       if (reason === DisconnectReason.loggedOut) {
+        console.log('❌ Logged out. Wiping session.');
         fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
-      } 
-      // Always reconnect
+        ownerJid = null;
+      }
       setTimeout(start, 3000);
-    } else if (connection === 'open') {
+    } 
+    
+    else if (connection === 'open') {
       console.log('✅ Connected!');
       connectionStatus = 'Connected';
+      
+      // AUTO-DETECT OWNER from Session
+      // sock.user.id comes like "917001...@s.whatsapp.net:5" -> We clean it
+      if (sock.user && sock.user.id) {
+        ownerJid = sock.user.id.split(':')[0] + "@s.whatsapp.net";
+        console.log(`👑 OWNER AUTO-DETECTED: ${ownerJid}`);
+      }
     }
   });
 
@@ -126,50 +135,45 @@ async function start() {
     if (!msg.message) return;
     
     const from = msg.key.remoteJid;
-    const isOwner = from === OWNER_NUMBER;
+    // CRITICAL: Check if message is FROM ME (The Owner)
+    const isOwner = msg.key.fromMe || (ownerJid && from === ownerJid);
     
-    // 1. Extract Body (Command)
+    // 1. Get Text
     const text = msg.message.conversation || 
                  msg.message.extendedTextMessage?.text || 
                  msg.message.imageMessage?.caption || "";
     
-    if (!text.startsWith('.')) return; // Ignore non-commands
+    if (!text.startsWith('.')) return;
 
     const command = text.split(' ')[0].toLowerCase();
     const args = text.split(' ').slice(1).join(' ');
 
-    // 2. Extract Quoted Context (The "Reply" Logic)
+    // 2. Get Context (Reply)
     const quotedMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
     const quotedText = quotedMsg?.conversation || quotedMsg?.extendedTextMessage?.text || "";
     
-    // 3. Helper Reply Function
     const reply = (txt) => sock.sendMessage(from, { text: txt }, { quoted: msg });
 
-    console.log(`📩 Command: ${command} from ${from.split('@')[0]}`);
+    console.log(`📩 Cmd: ${command} | Sender: ${isOwner ? "OWNER" : "User"}`);
 
-    // ==================== COMMANDS ====================
+    // --- COMMANDS ---
 
-    // --- 1. .ask (The AI Brain) ---
+    // 1. .ask (Context Aware)
     if (command === '.ask') {
-      if (!args && !quotedText) return reply("❌ Usage: .ask [question] (or reply to text)");
+      if (!args && !quotedText) return reply("❌ Usage: .ask [query] (or reply to text)");
       
-      // Check Credits
-      if (!useCredit(from)) return reply("❌ You have 0 credits. Ask owner to top-up.");
+      if (!useCredit(from, isOwner)) return reply("❌ 0 Credits. Ask owner for more.");
 
       try {
         const genAI = new GoogleGenerativeAI(API_KEY);
+        // Using 'gemini-flash-latest' (Change to 'gemini-pro' if flash fails)
         const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
-        // Prepare Knowledge Base Context
         const knowledgeDump = JSON.stringify(db.knowledge);
+        let finalPrompt = `System: You are Meraj AI. Knowledge Base: ${knowledgeDump}.\n`;
         
-        // Build the sophisticated prompt
-        let finalPrompt = `System: You are Meraj AI. You have access to this saved knowledge: ${knowledgeDump}.\n`;
-        
-        if (quotedText) {
-          finalPrompt += `\nUSER REPLIED TO THIS MESSAGE:\n"${quotedText}"\n\n`;
-        }
-        finalPrompt += `USER QUESTION: ${args}`;
+        if (quotedText) finalPrompt += `\nCONTEXT (User Replied to):\n"${quotedText}"\n\n`;
+        finalPrompt += `QUESTION: ${args}`;
 
         const result = await model.generateContent(finalPrompt);
         await reply(result.response.text());
@@ -179,111 +183,57 @@ async function start() {
       }
     }
 
-    // --- 2. .save (Memory) ---
+    // 2. .save (Memory)
     else if (command === '.save') {
-      if (!quotedText) return reply("❌ Please reply to a message to save it.");
-      if (!args) return reply("❌ Usage: reply to text -> .save [name]");
+      if (!quotedText) return reply("❌ Reply to a message to save it.");
+      if (!args) return reply("❌ Usage: .save [name]");
       
       db.knowledge[args.toLowerCase()] = quotedText;
       saveDB();
-      reply(`✅ Saved to AI Memory as "${args}".\nAI can now use this info.`);
+      reply(`✅ Saved "${args}" to memory.`);
     }
 
-    // --- 3. .credit (Owner Only) ---
+    // 3. .credit (Owner Only)
     else if (command === '.credit') {
-      if (!isOwner) return reply("❌ Owner only.");
-      if (!quotedMsg) return reply("❌ Reply to a user to give credits.");
+      if (!isOwner) return reply("🛑 Owner Only Command.");
       
-      // Get the number of the person quoted
-      const targetUser = msg.message.extendedTextMessage.contextInfo.participant;
-      const amount = parseInt(args) || 5; // Default 5
+      // We need to find WHO to give credits to.
+      // 1. Check if replying to someone
+      const target = msg.message.extendedTextMessage?.contextInfo?.participant;
       
-      if (!db.users[targetUser]) db.users[targetUser] = { credits: 0 };
-      db.users[targetUser].credits += amount;
+      if (!target) return reply("❌ Reply to a user's message to give credits.");
+      
+      const amount = parseInt(args) || 5;
+      if (!db.users[target]) db.users[target] = { credits: 0 };
+      db.users[target].credits += amount;
       saveDB();
       
-      reply(`✅ Added ${amount} credits to user.`);
-      // Notify the user
-      await sock.sendMessage(targetUser, { text: `🎉 You received ${amount} AI credits from Owner!` });
+      reply(`✅ Gave ${amount} credits to that user.`);
     }
 
-    // --- 4. .balance (Check Credits) ---
+    // 4. .balance
     else if (command === '.balance') {
-      const creds = getCredits(from);
-      reply(`💳 You have: ${creds === 999999 ? 'UNLIMITED' : creds} credits.`);
+      const c = getCredits(from, isOwner);
+      reply(`💳 Credits: ${c}`);
     }
 
-    // --- 5. .summarize (Utility) ---
-    else if (command === '.summarize') {
-       if (!quotedText) return reply("❌ Reply to a long text to summarize.");
-       if (!useCredit(from)) return reply("❌ No credits.");
-       
-       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-flash-latest" });
-       const res = await model.generateContent(`Summarize this in 3 bullet points:\n${quotedText}`);
-       reply(res.response.text());
-    }
-
-    // --- 6. .tr (Translate) ---
-    else if (command === '.tr') {
-       if (!quotedText) return reply("❌ Reply to text to translate.");
-       const lang = args || "English";
-       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-flash-latest" });
-       const res = await model.generateContent(`Translate this to ${lang}:\n${quotedText}`);
-       reply(res.response.text());
-    }
-
-    // --- 7. .ping ---
-    else if (command === '.ping') {
-      reply("🏓 Pong! Bot is Online.");
-    }
-
-    // --- 8. .alive ---
-    else if (command === '.alive') {
-       const uptime = process.uptime();
-       reply(`🤖 System Active.\nUptime: ${Math.floor(uptime)} seconds.\nMode: ${isOwner ? "Owner" : "User"}`);
-    }
-
-    // --- 9. .owner ---
-    else if (command === '.owner') {
-      // Send vCard or contact
-      reply(`👤 *Bot Owner*\nName: Meraj\nContact: wa.me/${OWNER_NUMBER.split('@')[0]}`);
-    }
-
-    // --- 10. .joke ---
-    else if (command === '.joke') {
-       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-flash-latest" });
-       const res = await model.generateContent(`Tell me a short funny joke.`);
-       reply(res.response.text());
-    }
-
-    // --- 11. .help ---
+    // 5. .help
     else if (command === '.help') {
-      const menu = `
-🤖 *MERAJ BOT MENU* 🤖
-
-*AI Commands (Costs 1 Credit):*
-🔹 *.ask [query]* - Ask AI (Reply to msg for context!)
-🔹 *.summarize* - Summarize quoted text
-🔹 *.tr [lang]* - Translate quoted text
-🔹 *.joke* - Tell a joke
-
-*Tools:*
-🔸 *.save [name]* - Save quoted text to AI memory
-🔸 *.balance* - Check your credits
-🔸 *.ping* - Check latency
-🔸 *.owner* - Contact Owner
-🔸 *.alive* - System status
-
-*Owner Only:*
-🔑 *.credit [amount]* - Reply to user to give credits
-`;
-      reply(menu);
+      reply(`
+🤖 *MERAJ BOT* ----------------
+🔹 .ask [query] (AI)
+🔹 .save [name] (Save Info)
+🔹 .balance (Check Credits)
+🔹 .ping (Test)
+${isOwner ? "\n👑 *Owner Cmds:*\n🔹 .credit [amount] (Reply to user)" : ""}
+`);
     }
+
+    else if (command === '.ping') reply("🏓 Pong!");
 
   });
 }
 
-// Start Server
+// Start
 app.listen(PORT, () => console.log(`🌍 Server on port ${PORT}`));
 start();
-
