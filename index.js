@@ -6,14 +6,13 @@ const pino = require('pino');
 
 // --- CONFIGURATION ---
 const API_KEY = process.env.API_KEY;
-// ⚠️ Your Phone Number
 const BOT_NUMBER = "917001747616"; 
 const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 
 // --- SERVER ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Meraj Bot Active 🟢'));
+app.get('/', (req, res) => res.send('Meraj Bot Resetting... 🟡'));
 app.listen(PORT, () => console.log(`🌍 Server active on port ${PORT}`));
 
 // --- AI CONFIG ---
@@ -25,9 +24,17 @@ You are Meraj AI.
 `;
 
 async function start() {
-    console.log("🚀 Starting Bot...");
+    console.log("🚀 Starting Bot (Reset Mode)...");
 
-    if (!fs.existsSync('auth_info')) fs.mkdirSync('auth_info');
+    // --- 🛑 FORCE RESET: Delete old session ---
+    // This fixes the "Pairing Code doesn't appear" bug
+    if (fs.existsSync('auth_info')) {
+        console.log("♻️ Found old session. Deleting it to force new Pairing Code...");
+        fs.rmSync('auth_info', { recursive: true, force: true });
+    }
+
+    // Create fresh folder
+    fs.mkdirSync('auth_info');
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
     const sock = makeWASocket({
@@ -39,19 +46,20 @@ async function start() {
         connectTimeoutMs: 60000,
     });
 
-    // Pairing Logic
-    if (!sock.authState.creds.registered) {
-        console.log("⏳ Waiting for connection...");
-        setTimeout(async () => {
-            try {
-                console.log("📡 Requesting Pairing Code...");
-                const code = await sock.requestPairingCode(BOT_NUMBER);
-                console.log(`✨ PAIRING CODE: ${code}`);
-            } catch (err) {
-                console.log("❌ Error requesting code: " + err.message);
-            }
-        }, 3000);
-    }
+    // --- PAIRING LOGIC (Always runs now) ---
+    console.log("⏳ Waiting for connection to stabilize...");
+    setTimeout(async () => {
+        try {
+            console.log("📡 Requesting New Pairing Code...");
+            const code = await sock.requestPairingCode(BOT_NUMBER);
+            console.log("\n\n====================================================");
+            console.log("✨ YOUR NEW PAIRING CODE:");
+            console.log(`\x1b[32m${code?.match(/.{1,4}/g)?.join("-") || code}\x1b[0m`);
+            console.log("====================================================\n\n");
+        } catch (err) {
+            console.log("❌ Error requesting code: " + err.message);
+        }
+    }, 5000); // Increased wait to 5s for better reliability
 
     sock.ev.on('creds.update', saveCreds);
 
@@ -60,19 +68,14 @@ async function start() {
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
             console.log(`⚠️ Connection closed. Reason: ${reason}`);
-            if (reason !== DisconnectReason.loggedOut) {
-                setTimeout(start, 3000);
-            } else {
-                console.log("❌ Logged out. Clearing session.");
-                fs.rmSync('auth_info', { recursive: true, force: true });
-                start();
-            }
+            // If logged out, we just restart and the code at the top will wipe it again
+            setTimeout(start, 3000);
         } else if (connection === 'open') {
-            console.log('✅ SUCCESS! Bot is Connected & Listening.');
+            console.log('✅ SUCCESS! Bot is Connected.');
         }
     });
 
-    if (!API_KEY) console.error("❌ API_KEY is NOT set! Check Render Environment.");
+    if (!API_KEY) console.error("❌ API_KEY is NOT set!");
     const genAI = new GoogleGenerativeAI(API_KEY);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash", systemInstruction: SYSTEM_PROMPT });
 
@@ -80,40 +83,25 @@ async function start() {
         const msg = messages[0];
         if (!msg.message) return;
 
-        // --- EXTRACT TEXT ---
         const text = msg.message.conversation || 
                      msg.message.extendedTextMessage?.text || 
                      msg.message.imageMessage?.caption || "";
-        
         const chatId = msg.key.remoteJid;
-        const isMe = msg.key.fromMe; // Is this message from YOU?
+        const isMe = msg.key.fromMe;
 
-        // --- DEBUG LOG ---
-        // This will print every message to Render Logs so we know it has ears
         console.log(`📩 New Message (${isMe ? "You" : "Someone"}): ${text}`);
 
-        // --- COMMANDS ---
-        
-        // 1. PING
         if (text.toLowerCase() === '.ping') {
-             console.log("🏓 Sending Pong...");
              await sock.sendMessage(chatId, { text: "🏓 Pong!" }, { quoted: msg });
         }
 
-        // 2. ASK AI
         if (text.toLowerCase().startsWith('.ask ')) {
             const query = text.slice(5).trim();
-            console.log(`🧠 AI Query: ${query}`);
-            
-            // Send "Thinking..." placeholder
-            await sock.sendMessage(chatId, { react: { text: "🤔", key: msg.key } });
-
             const chat = model.startChat({});
             try {
                 const result = await chat.sendMessage(query);
                 await sock.sendMessage(chatId, { text: result.response.text() }, { quoted: msg });
             } catch (err) {
-                console.error("AI Error:", err);
                 await sock.sendMessage(chatId, { text: "Error: " + err.message }, { quoted: msg });
             }
         }
