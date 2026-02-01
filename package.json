@@ -1,7 +1,7 @@
 {
   "name": "meraj-render-bot",
-  "version": "4.0.0",
-  "description": "Web QR Bot",
+  "version": "5.0.0",
+  "description": "Web QR Bot Fixed",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
