@@ -7,14 +7,12 @@ const pino = require('pino');
 
 // --- CONFIGURATION ---
 const API_KEY = process.env.API_KEY; 
-const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 
 // --- SERVER & WEB QR SYSTEM ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-let currentQR = null; // Stores the QR Code image data
+let currentQR = null;
 
-// 1. Status Page
 app.get('/', (req, res) => {
     res.send(`
         <div style="font-family:sans-serif; text-align:center; padding:50px;">
@@ -24,7 +22,6 @@ app.get('/', (req, res) => {
     `);
 });
 
-// 2. The QR Display Page
 app.get('/qr', (req, res) => {
     if (currentQR) {
         res.send(`
@@ -34,7 +31,6 @@ app.get('/qr', (req, res) => {
                         <h2>Scan with WhatsApp</h2>
                         <img src="${currentQR}" style="border:10px solid white; border-radius:10px; width:300px; height:300px;" />
                         <p style="margin-top:20px;">Settings > Linked Devices > Link a Device</p>
-                        <p style="color:yellow;">If it doesn't scan, zoom out (Ctrl -)</p>
                     </div>
                 </body>
             </html>
@@ -46,28 +42,30 @@ app.get('/qr', (req, res) => {
 
 app.listen(PORT, () => console.log(`🌍 Server active on port ${PORT}`));
 
-// --- AI CONFIG ---
 const SYSTEM_PROMPT = `You are Meraj AI. Keep answers short. No LaTeX.`;
 
 async function start() {
-    console.log("🚀 Starting Bot (Web QR Mode)...");
+    console.log("🚀 Starting Bot (Fixed Version Mode)...");
 
-    // --- 🛑 THE 405 FIX: HARD WIPE ---
-    // If the folder exists, we delete it to kill the "Zombie Session" causing 405 errors.
+    // 1. HARD WIPE to fix 405 Loop
     if (fs.existsSync('auth_info')) {
-        console.log("♻️  Fixing 405 Error: Wiping corrupted session...");
+        console.log("♻️  Cleaning session...");
         fs.rmSync('auth_info', { recursive: true, force: true });
     }
-    
     fs.mkdirSync('auth_info');
+    
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
+    // 2. HARDCODED VERSION (Crucial Fix)
+    // This stops the bot from asking WhatsApp server for the version (which was failing)
+    const version = [2, 3000, 1015901307];
+
     const sock = makeWASocket({
+        version, // <--- This line prevents the 405 Error
         auth: state,
-        printQRInTerminal: false, // We use the website
+        printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        // FIX: Switch to macOS signature which is more stable on Render
-        browser: Browsers.macOS('Desktop'), 
+        browser: Browsers.ubuntu('Chrome'), 
         syncFullHistory: false,
         connectTimeoutMs: 60000,
     });
@@ -77,10 +75,8 @@ async function start() {
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // --- GENERATE WEB QR ---
         if (qr) {
             console.log("✨ QR Code generated! Open the website URL to scan.");
-            // Convert QR to Image
             currentQR = await QRCode.toDataURL(qr);
         }
 
@@ -88,17 +84,16 @@ async function start() {
             const reason = lastDisconnect?.error?.output?.statusCode;
             console.log(`⚠️ Connection closed. Reason: ${reason}`);
             
-            // If logged out or 405, we restart to wipe the session again
+            // If logged out or 405, we restart completely
             if (reason === DisconnectReason.loggedOut || reason === 405) {
-                console.log("❌ Critical Error (405/Logout). Restarting fresh...");
-                // The restart will trigger the wipe at the top of the function
+                console.log("❌ Critical Error. Restarting...");
                 start();
             } else {
                 setTimeout(start, 3000);
             }
         } else if (connection === 'open') {
             console.log('✅ SUCCESS! Bot is Connected.');
-            currentQR = null; // Clear QR so nobody else can scan it
+            currentQR = null;
         }
     });
 
@@ -113,8 +108,7 @@ async function start() {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const chatId = msg.key.remoteJid;
 
-        // Debug Log
-        console.log(`📩 Message: ${text}`);
+        console.log(`📩 New Message: ${text}`);
 
         if (text.toLowerCase() === '.ping') {
              await sock.sendMessage(chatId, { text: "🏓 Pong!" }, { quoted: msg });
