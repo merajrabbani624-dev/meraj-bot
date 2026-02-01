@@ -132,7 +132,7 @@ async function connectToWhatsApp() {
       await sock.sendMessage(from, { text: '🏓 Pong!' }, { quoted: msg });
     }
     
-    // AI COMMAND - Switched to 'gemini-pro' as requested
+    // AI COMMAND - Switched to 'gemini-flash-latest' as requested
     else if (text.toLowerCase().startsWith('.ask ')) {
       if (!API_KEY) return sock.sendMessage(from, { text: '❌ No API_KEY found.' });
       
@@ -155,3 +155,4 @@ async function connectToWhatsApp() {
 // Start
 app.listen(PORT, () => console.log(`🌍 Server on port ${PORT}`));
 connectToWhatsApp();
+
