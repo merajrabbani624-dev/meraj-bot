@@ -6,6 +6,7 @@ const pino = require('pino');
 
 // --- CONFIGURATION ---
 const API_KEY = process.env.API_KEY;
+// ⚠️ Your Phone Number
 const BOT_NUMBER = "917001747616"; 
 const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 
@@ -34,7 +35,7 @@ async function start() {
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
         browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: false, // Ignores old messages to start faster
+        syncFullHistory: false, 
         connectTimeoutMs: 60000,
     });
 
@@ -71,35 +72,42 @@ async function start() {
         }
     });
 
-    if (!API_KEY) return console.error("❌ API_KEY missing!");
+    if (!API_KEY) console.error("❌ API_KEY is NOT set! Check Render Environment.");
     const genAI = new GoogleGenerativeAI(API_KEY);
     const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash", systemInstruction: SYSTEM_PROMPT });
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!msg.message) return;
 
-        // --- EXTRACT TEXT SAFELY ---
-        // This handles text, image captions, and quoted text
+        // --- EXTRACT TEXT ---
         const text = msg.message.conversation || 
                      msg.message.extendedTextMessage?.text || 
                      msg.message.imageMessage?.caption || "";
         
         const chatId = msg.key.remoteJid;
+        const isMe = msg.key.fromMe; // Is this message from YOU?
 
-        // --- DEBUG LOGGING ---
-        // This will show up in Render Logs!
-        console.log(`📩 Received from ${chatId.split('@')[0]}: ${text}`);
+        // --- DEBUG LOG ---
+        // This will print every message to Render Logs so we know it has ears
+        console.log(`📩 New Message (${isMe ? "You" : "Someone"}): ${text}`);
 
         // --- COMMANDS ---
+        
+        // 1. PING
         if (text.toLowerCase() === '.ping') {
              console.log("🏓 Sending Pong...");
              await sock.sendMessage(chatId, { text: "🏓 Pong!" }, { quoted: msg });
         }
 
+        // 2. ASK AI
         if (text.toLowerCase().startsWith('.ask ')) {
             const query = text.slice(5).trim();
             console.log(`🧠 AI Query: ${query}`);
+            
+            // Send "Thinking..." placeholder
+            await sock.sendMessage(chatId, { react: { text: "🤔", key: msg.key } });
+
             const chat = model.startChat({});
             try {
                 const result = await chat.sendMessage(query);
