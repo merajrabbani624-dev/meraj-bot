@@ -1,17 +1,32 @@
 {
-  "name": "meraj-railway-bot",
+  "name": "whatsapp-gemini-bot",
   "version": "1.0.0",
-  "description": "Railway WhatsApp Bot",
-  "main": "index.js",
+  "description": "Production-ready WhatsApp Bot with Gemini AI integration",
+  "main": "whatsapp-bot.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node whatsapp-bot.js",
+    "dev": "nodemon whatsapp-bot.js"
   },
+  "keywords": [
+    "whatsapp",
+    "bot",
+    "baileys",
+    "gemini",
+    "ai",
+    "railway",
+    "render"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "@google/generative-ai": "^0.1.3",
-    "@whiskeysockets/baileys": "^6.7.9",
-    "pino": "^9.0.0",
-    "express": "^4.19.2",
-    "qrcode": "^1.5.3"
+    "@whiskeysockets/baileys": "^6.7.8",
+    "@google/generative-ai": "^0.21.0",
+    "express": "^4.21.2",
+    "qrcode": "^1.5.4",
+    "pino": "^9.5.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.9"
   },
   "engines": {
     "node": ">=18.0.0"
