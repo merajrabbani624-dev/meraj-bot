@@ -1,12 +1,13 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, delay } = require('@whiskeysockets/baileys');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-const qrcode = require('qrcode-terminal');
 const express = require('express');
 const fs = require('fs');
 const pino = require('pino');
 
 // --- CONFIGURATION ---
-const API_KEY = process.env.API_KEY; 
+const API_KEY = process.env.API_KEY;
+// ⚠️ Your Phone Number (No '+' sign)
+const BOT_NUMBER = "917001747616"; 
 const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 
 // --- KEEP-ALIVE SERVER ---
@@ -14,7 +15,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-    res.send('Meraj Bot is Running 🟢');
+    res.send('Meraj Bot (Pairing Mode) 🟢');
 });
 
 app.listen(PORT, () => {
@@ -30,49 +31,56 @@ You are Meraj AI.
 `;
 
 async function start() {
-    console.log("🚀 Starting Bot...");
+    console.log("🚀 Starting Pairing Mode...");
 
-    // Create auth folder
     if (!fs.existsSync('auth_info')) fs.mkdirSync('auth_info');
-    
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
-    // --- RENDER-OPTIMIZED CONNECTION ---
+    // --- RENDER CONNECTION ---
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false, // <--- FIXED: Set to false to stop warnings
+        printQRInTerminal: false, // QR OFF
         logger: pino({ level: "silent" }),
-        // Use Ubuntu signature to look like a standard Linux server
-        browser: Browsers.ubuntu('Chrome'), 
+        browser: Browsers.ubuntu('Chrome'), // Linux Signature
         syncFullHistory: false,
         connectTimeoutMs: 60000,
     });
 
+    // --- PAIRING CODE LOGIC ---
+    if (!sock.authState.creds.registered) {
+        console.log("⏳ Waiting for connection to stabilize...");
+        
+        // Wait 3 seconds, then request the code
+        setTimeout(async () => {
+            try {
+                console.log("📡 Requesting Pairing Code...");
+                const code = await sock.requestPairingCode(BOT_NUMBER);
+                console.log("\n\n====================================================");
+                console.log("✨ YOUR PAIRING CODE:");
+                console.log(`\x1b[32m${code?.match(/.{1,4}/g)?.join("-") || code}\x1b[0m`);
+                console.log("====================================================\n\n");
+            } catch (err) {
+                console.log("❌ Error requesting code: " + err.message);
+            }
+        }, 3000);
+    }
+
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update;
-
-        // --- MANUAL QR GENERATION ---
-        if (qr) {
-            console.log("\n✨ SCAN THE QR CODE BELOW:\n");
-            qrcode.generate(qr, { small: true });
-        }
+        const { connection, lastDisconnect } = update;
 
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
             console.log(`⚠️ Connection closed. Reason: ${reason}`);
             
-            // If 405 or 408 (Server errors), we wipe and restart
-            if (reason === 405 || reason === 408) {
-                console.log("❌ Server rejected connection. Clearing session and retrying...");
-                fs.rmSync('auth_info', { recursive: true, force: true });
-                start();
-            } else if (reason !== DisconnectReason.loggedOut) {
+            if (reason !== DisconnectReason.loggedOut) {
                 console.log("⏳ Reconnecting...");
                 setTimeout(start, 3000);
             } else {
-                console.log("❌ Logged out. Delete auth_info manually.");
+                console.log("❌ Logged out. Clearing session.");
+                fs.rmSync('auth_info', { recursive: true, force: true });
+                start();
             }
         } else if (connection === 'open') {
             console.log('✅ SUCCESS! Bot is Connected.');
