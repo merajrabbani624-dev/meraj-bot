@@ -6,21 +6,14 @@ const pino = require('pino');
 
 // --- CONFIGURATION ---
 const API_KEY = process.env.API_KEY;
-// ⚠️ Your Phone Number (No '+' sign)
 const BOT_NUMBER = "917001747616"; 
 const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 
-// --- KEEP-ALIVE SERVER ---
+// --- SERVER ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-app.get('/', (req, res) => {
-    res.send('Meraj Bot (Pairing Mode) 🟢');
-});
-
-app.listen(PORT, () => {
-    console.log(`🌍 Server active on port ${PORT}`);
-});
+app.get('/', (req, res) => res.send('Meraj Bot Active 🟢'));
+app.listen(PORT, () => console.log(`🌍 Server active on port ${PORT}`));
 
 // --- AI CONFIG ---
 const SYSTEM_PROMPT = `
@@ -31,34 +24,28 @@ You are Meraj AI.
 `;
 
 async function start() {
-    console.log("🚀 Starting Pairing Mode...");
+    console.log("🚀 Starting Bot...");
 
     if (!fs.existsSync('auth_info')) fs.mkdirSync('auth_info');
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
-    // --- RENDER CONNECTION ---
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false, // QR OFF
+        printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: Browsers.ubuntu('Chrome'), // Linux Signature
-        syncFullHistory: false,
+        browser: Browsers.ubuntu('Chrome'),
+        syncFullHistory: false, // Ignores old messages to start faster
         connectTimeoutMs: 60000,
     });
 
-    // --- PAIRING CODE LOGIC ---
+    // Pairing Logic
     if (!sock.authState.creds.registered) {
-        console.log("⏳ Waiting for connection to stabilize...");
-        
-        // Wait 3 seconds, then request the code
+        console.log("⏳ Waiting for connection...");
         setTimeout(async () => {
             try {
                 console.log("📡 Requesting Pairing Code...");
                 const code = await sock.requestPairingCode(BOT_NUMBER);
-                console.log("\n\n====================================================");
-                console.log("✨ YOUR PAIRING CODE:");
-                console.log(`\x1b[32m${code?.match(/.{1,4}/g)?.join("-") || code}\x1b[0m`);
-                console.log("====================================================\n\n");
+                console.log(`✨ PAIRING CODE: ${code}`);
             } catch (err) {
                 console.log("❌ Error requesting code: " + err.message);
             }
@@ -69,13 +56,10 @@ async function start() {
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
-
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
             console.log(`⚠️ Connection closed. Reason: ${reason}`);
-            
             if (reason !== DisconnectReason.loggedOut) {
-                console.log("⏳ Reconnecting...");
                 setTimeout(start, 3000);
             } else {
                 console.log("❌ Logged out. Clearing session.");
@@ -83,7 +67,7 @@ async function start() {
                 start();
             }
         } else if (connection === 'open') {
-            console.log('✅ SUCCESS! Bot is Connected.');
+            console.log('✅ SUCCESS! Bot is Connected & Listening.');
         }
     });
 
@@ -95,20 +79,33 @@ async function start() {
         const msg = messages[0];
         if (!msg.message || msg.key.fromMe) return;
 
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        // --- EXTRACT TEXT SAFELY ---
+        // This handles text, image captions, and quoted text
+        const text = msg.message.conversation || 
+                     msg.message.extendedTextMessage?.text || 
+                     msg.message.imageMessage?.caption || "";
+        
         const chatId = msg.key.remoteJid;
 
+        // --- DEBUG LOGGING ---
+        // This will show up in Render Logs!
+        console.log(`📩 Received from ${chatId.split('@')[0]}: ${text}`);
+
+        // --- COMMANDS ---
         if (text.toLowerCase() === '.ping') {
+             console.log("🏓 Sending Pong...");
              await sock.sendMessage(chatId, { text: "🏓 Pong!" }, { quoted: msg });
         }
 
         if (text.toLowerCase().startsWith('.ask ')) {
             const query = text.slice(5).trim();
+            console.log(`🧠 AI Query: ${query}`);
             const chat = model.startChat({});
             try {
                 const result = await chat.sendMessage(query);
                 await sock.sendMessage(chatId, { text: result.response.text() }, { quoted: msg });
             } catch (err) {
+                console.error("AI Error:", err);
                 await sock.sendMessage(chatId, { text: "Error: " + err.message }, { quoted: msg });
             }
         }
