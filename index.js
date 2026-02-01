@@ -1,87 +1,91 @@
-const { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers, delay } = require('@whiskeysockets/baileys');
+const { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const QRCode = require('qrcode'); // Library for Web QR
 const express = require('express');
 const fs = require('fs');
 const pino = require('pino');
 
 // --- CONFIGURATION ---
-const API_KEY = process.env.API_KEY;
-const BOT_NUMBER = "917001747616"; 
+const API_KEY = process.env.API_KEY; 
 const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 
-// --- SERVER ---
+// --- SERVER & WEB QR SYSTEM ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Meraj Bot Active 🟢'));
+let currentQR = null; // Variable to store the QR code
+
+// 1. Home Page
+app.get('/', (req, res) => {
+    res.send('<h1>Meraj Bot is Active 🤖</h1><p><a href="/qr">Click here to Scan QR</a></p>');
+});
+
+// 2. The QR Page (This solves the distortion issue)
+app.get('/qr', (req, res) => {
+    if (currentQR) {
+        // Display the QR as a large image
+        res.send(`
+            <html>
+                <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#f0f0f0;">
+                    <div style="text-align:center;">
+                        <h2>Scan this code on WhatsApp</h2>
+                        <img src="${currentQR}" style="border:5px solid white; border-radius:10px; box-shadow:0 0 10px rgba(0,0,0,0.1);" />
+                        <p>Settings > Linked Devices > Link a Device</p>
+                    </div>
+                </body>
+            </html>
+        `);
+    } else {
+        res.send('<h2>✅ Bot is already connected! No QR needed.</h2>');
+    }
+});
+
 app.listen(PORT, () => console.log(`🌍 Server active on port ${PORT}`));
 
+// --- AI CONFIG ---
 const SYSTEM_PROMPT = `You are Meraj AI. Keep answers short. No LaTeX.`;
 
 async function start() {
-    console.log("🚀 Starting Bot...");
+    console.log("🚀 Starting Bot (Web QR Mode)...");
 
-    // 🛑 ZOMBIE KILLER: This checks if the session is broken
-    // If we have a folder but no valid login, we wipe it.
-    if (fs.existsSync('auth_info')) {
-        // We will attempt to load it. If it fails or is stuck, the logic below handles it.
-    } else {
-        fs.mkdirSync('auth_info');
-    }
-
+    if (!fs.existsSync('auth_info')) fs.mkdirSync('auth_info');
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: false, // We use the website instead
         logger: pino({ level: "silent" }),
-        // SWITCHED TO MacOS: This often fixes the "Could not login" error
-        browser: Browsers.macOS('Desktop'), 
+        browser: Browsers.ubuntu('Chrome'), 
         syncFullHistory: false,
         connectTimeoutMs: 60000,
     });
 
-    // --- PAIRING LOGIC ---
-    // This will run ONLY if the bot is not already logged in
-    if (!sock.authState.creds.registered) {
-        console.log("⏳ Connection warming up (Wait 5s)...");
-        setTimeout(async () => {
-            try {
-                console.log("📡 Requesting Pairing Code...");
-                const code = await sock.requestPairingCode(BOT_NUMBER);
-                console.log("\n\n====================================================");
-                console.log("✨ YOUR PAIRING CODE:");
-                console.log(`\x1b[32m${code?.match(/.{1,4}/g)?.join("-") || code}\x1b[0m`);
-                console.log("====================================================\n\n");
-            } catch (err) {
-                console.log("❌ Error requesting code: " + err.message);
-                // If this fails, it means the session is corrupted. WIPE IT.
-                console.log("♻️ Session corrupted. Wiping and retrying...");
-                fs.rmSync('auth_info', { recursive: true, force: true });
-                process.exit(1); // Restart the bot
-            }
-        }, 5000);
-    }
-
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect } = update;
-        
+        const { connection, lastDisconnect, qr } = update;
+
+        // --- GENERATE WEB QR ---
+        if (qr) {
+            console.log("✨ QR Code generated! Check the website.");
+            // Convert QR text to a Scan-able Image Data URL
+            currentQR = await QRCode.toDataURL(qr);
+        }
+
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
             console.log(`⚠️ Connection closed. Reason: ${reason}`);
-
-            // 401 means "Logged Out" or "Bad Session". We must wipe.
-            if (reason === DisconnectReason.loggedOut || reason === 401) {
-                console.log("❌ Session Invalid. Deleting auth_info...");
+            
+            if (reason === DisconnectReason.loggedOut) {
+                console.log("❌ Logged out. Clearing session.");
                 fs.rmSync('auth_info', { recursive: true, force: true });
-                start(); // Restart fresh
+                currentQR = null; // Reset QR
+                start();
             } else {
-                // Any other error, just retry
                 setTimeout(start, 3000);
             }
         } else if (connection === 'open') {
             console.log('✅ SUCCESS! Bot is Connected.');
+            currentQR = null; // Remove QR once connected
         }
     });
 
@@ -92,6 +96,7 @@ async function start() {
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg.message) return;
+
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const chatId = msg.key.remoteJid;
         const isMe = msg.key.fromMe;
@@ -114,5 +119,3 @@ async function start() {
     });
 }
 start();
-
-
