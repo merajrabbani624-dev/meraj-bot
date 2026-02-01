@@ -16,7 +16,7 @@ let currentQR = null;
 app.get('/', (req, res) => {
     res.send(`
         <div style="font-family:sans-serif; text-align:center; padding:50px;">
-            <h1>Meraj Bot Status: <span style="color:green;">Online 🟢</span></h1>
+            <h1>Meraj Bot on Railway 🚂</h1>
             <p><a href="/qr" style="font-size:20px; color:blue;">Click here to Scan QR Code</a></p>
         </div>
     `);
@@ -36,7 +36,7 @@ app.get('/qr', (req, res) => {
             </html>
         `);
     } else {
-        res.send('<h2 style="font-family:sans-serif; text-align:center; margin-top:50px;">✅ Bot is already connected! No QR needed.</h2>');
+        res.send('<h2 style="font-family:sans-serif; text-align:center; margin-top:50px;">✅ Bot is already connected!</h2>');
     }
 });
 
@@ -45,23 +45,22 @@ app.listen(PORT, () => console.log(`🌍 Server active on port ${PORT}`));
 const SYSTEM_PROMPT = `You are Meraj AI. Keep answers short. No LaTeX.`;
 
 async function start() {
-    console.log("🚀 Starting Bot (Fixed Version Mode)...");
+    console.log("🚀 Starting Bot on Railway...");
 
-    // 1. HARD WIPE to fix 405 Loop
+    // 1. HARD WIPE (Fixes the loop)
     if (fs.existsSync('auth_info')) {
-        console.log("♻️  Cleaning session...");
+        console.log("♻️  Cleaning session to prevent 405 errors...");
         fs.rmSync('auth_info', { recursive: true, force: true });
     }
     fs.mkdirSync('auth_info');
     
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
-    // 2. HARDCODED VERSION (Crucial Fix)
-    // This stops the bot from asking WhatsApp server for the version (which was failing)
+    // 2. HARDCODED VERSION (Crucial Fix for 405)
     const version = [2, 3000, 1015901307];
 
     const sock = makeWASocket({
-        version, // <--- This line prevents the 405 Error
+        version, // <--- Stops the version check crash
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
@@ -76,7 +75,7 @@ async function start() {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            console.log("✨ QR Code generated! Open the website URL to scan.");
+            console.log("✨ QR Code ready. Check the website.");
             currentQR = await QRCode.toDataURL(qr);
         }
 
