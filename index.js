@@ -158,7 +158,7 @@ async function start() {
 
       try {
         const genAI = new GoogleGenerativeAI(API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
 
         // Prepare Knowledge Base Context
         const knowledgeDump = JSON.stringify(db.knowledge);
@@ -218,7 +218,7 @@ async function start() {
        if (!quotedText) return reply("❌ Reply to a long text to summarize.");
        if (!useCredit(from)) return reply("❌ No credits.");
        
-       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-1.5-flash" });
+       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-flash-latest" });
        const res = await model.generateContent(`Summarize this in 3 bullet points:\n${quotedText}`);
        reply(res.response.text());
     }
@@ -227,7 +227,7 @@ async function start() {
     else if (command === '.tr') {
        if (!quotedText) return reply("❌ Reply to text to translate.");
        const lang = args || "English";
-       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-1.5-flash" });
+       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-flash-latest" });
        const res = await model.generateContent(`Translate this to ${lang}:\n${quotedText}`);
        reply(res.response.text());
     }
@@ -251,7 +251,7 @@ async function start() {
 
     // --- 10. .joke ---
     else if (command === '.joke') {
-       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-1.5-flash" });
+       const model = new GoogleGenerativeAI(API_KEY).getGenerativeModel({ model: "gemini-flash-latest" });
        const res = await model.generateContent(`Tell me a short funny joke.`);
        reply(res.response.text());
     }
@@ -286,3 +286,4 @@ async function start() {
 // Start Server
 app.listen(PORT, () => console.log(`🌍 Server on port ${PORT}`));
 start();
+
