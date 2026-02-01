@@ -18,7 +18,7 @@ const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || '';
 const AUTH_FOLDER = './auth_info';
 
-// FIXED VERSION: Prevents 405/515 handshake errors
+// Fallback version to prevent 405 Errors
 const FALLBACK_WA_VERSION = [2, 3000, 1015901307];
 
 // ==================== STATE ====================
@@ -62,21 +62,23 @@ async function getVersion() {
 }
 
 async function connectToWhatsApp() {
-  // 1. DO NOT DELETE AUTH_FOLDER ON START
-  // Only create if missing
+  // 1. Ensure Auth Folder Exists
   if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER);
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
   const version = await getVersion();
+  
+  // 2. Strict Silent Logger to prevent "SessionEntry" spam
+  const logger = pino({ level: 'fatal' });
 
   sock = makeWASocket({
     version,
     auth: {
       creds: state.creds,
-      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
+      keys: makeCacheableSignalKeyStore(state.keys, logger)
     },
     printQRInTerminal: false,
-    logger: pino({ level: 'silent' }),
+    logger: logger,
     browser: Browsers.ubuntu('Chrome'),
     connectTimeoutMs: 60000,
     retryRequestDelayMs: 2000,
@@ -97,14 +99,13 @@ async function connectToWhatsApp() {
       connectionStatus = 'Disconnected';
       qrDataURL = null;
 
-      // CRITICAL FIX: Only wipe if LOGGED OUT (401). 
-      // IGNORE 515, 405, 408 - Just reconnect.
+      // CRITICAL: Only delete session if TRULY Logged Out (401)
       if (reason === DisconnectReason.loggedOut) {
         console.log('❌ Device Logged Out. Clearing session...');
         fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
         connectToWhatsApp();
       } else {
-        // For 515/405/Stream Errors, we just restart WITHOUT deleting session
+        // For 515, 405, 408, 500 -> Just Reconnect. Do NOT delete session.
         console.log('🔄 Network glitch. Reconnecting in 3s...');
         setTimeout(connectToWhatsApp, 3000);
       }
@@ -131,18 +132,21 @@ async function connectToWhatsApp() {
       await sock.sendMessage(from, { text: '🏓 Pong!' }, { quoted: msg });
     }
     
-    // AI COMMAND
+    // AI COMMAND - Switched to 'gemini-pro' as requested
     else if (text.toLowerCase().startsWith('.ask ')) {
       if (!API_KEY) return sock.sendMessage(from, { text: '❌ No API_KEY found.' });
       
       const query = text.slice(5).trim();
       try {
         const genAI = new GoogleGenerativeAI(API_KEY);
-        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+        // CHANGED: Using the classic 'gemini-pro' model
+        const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
         const result = await model.generateContent(query);
-        await sock.sendMessage(from, { text: result.response.text() }, { quoted: msg });
+        const response = result.response.text();
+        await sock.sendMessage(from, { text: response }, { quoted: msg });
       } catch (err) {
-        await sock.sendMessage(from, { text: 'Error: ' + err.message }, { quoted: msg });
+        console.error("AI Error:", err.message); // Print minimal error
+        await sock.sendMessage(from, { text: 'AI Error: ' + err.message }, { quoted: msg });
       }
     }
   });
