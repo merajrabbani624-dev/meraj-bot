@@ -6,8 +6,8 @@ const pino = require('pino');
 
 // --- CONFIGURATION ---
 const API_KEY = process.env.API_KEY;
-const BOT_NUMBER = "918016918361"; 
-const OWNER_NUMBER = "918016918361@s.whatsapp.net";
+const BOT_NUMBER = "917001747616"; 
+const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 
 // --- SERVER ---
 const app = express();
@@ -114,4 +114,5 @@ async function start() {
     });
 }
 start();
+
 
