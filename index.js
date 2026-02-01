@@ -139,8 +139,8 @@ async function connectToWhatsApp() {
       const query = text.slice(5).trim();
       try {
         const genAI = new GoogleGenerativeAI(API_KEY);
-        // CHANGED: Using the classic 'gemini-pro' model
-        const model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+        // CHANGED: Using the classic 'gemini-flash-latest' model
+        const model = genAI.getGenerativeModel({ model: 'gemini-flash-latest' });
         const result = await model.generateContent(query);
         const response = result.response.text();
         await sock.sendMessage(from, { text: response }, { quoted: msg });
@@ -155,4 +155,5 @@ async function connectToWhatsApp() {
 // Start
 app.listen(PORT, () => console.log(`🌍 Server on port ${PORT}`));
 connectToWhatsApp();
+
 
