@@ -14,37 +14,59 @@ const fs = require('fs');
 
 // ==================== CONFIGURATION ====================
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.API_KEY; 
 const AUTH_FOLDER = './auth_info';
 const DB_FILE = './database.json';
 
-// ==================== DATABASE (Credits & Memory) ====================
-let db = {
-  users: {},      
-  knowledge: {}   
-};
+// --- API KEY ROTATION SYSTEM ---
+// Load all available keys from Environment Variables
+const apiKeys = [
+  process.env.API_KEY,
+  process.env.API_KEY1,
+  process.env.API_KEY2,
+  process.env.API_KEY3,
+  process.env.API_KEY4,
+  process.env.API_KEY5
+].filter(k => !!k); // Remove empty ones
 
-// Load Database
+if (apiKeys.length === 0) console.error("❌ NO API KEYS FOUND! Set API_KEY in env.");
+else console.log(`✅ Loaded ${apiKeys.length} AI API Keys for rotation.`);
+
+let currentKeyIndex = 0;
+
+// Smart Generate Function with Auto-Rotation
+async function generateSmartAI(prompt) {
+  // Try looping through all keys
+  for (let i = 0; i < apiKeys.length; i++) {
+    try {
+      // Get current key (using modulo to loop back to 0 if needed)
+      const key = apiKeys[(currentKeyIndex + i) % apiKeys.length];
+      const genAI = new GoogleGenerativeAI(key);
+      const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      
+      const result = await model.generateContent(prompt);
+      return result.response.text();
+      
+    } catch (err) {
+      console.warn(`⚠️ Key ${currentKeyIndex} Failed: ${err.message}. Switching...`);
+      // If error is strictly QUOTA or PERMISSION, rotate. Else might be logic error.
+      // But for safety, we rotate on almost any error.
+    }
+  }
+  return "❌ System Overload: All API Quotas Exhausted. Please add more keys.";
+}
+
+// ==================== DATABASE ====================
+let db = { users: {}, knowledge: {} };
 if (fs.existsSync(DB_FILE)) {
   try { db = JSON.parse(fs.readFileSync(DB_FILE)); } catch {}
 }
+function saveDB() { fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2)); }
 
-function saveDB() {
-  fs.writeFileSync(DB_FILE, JSON.stringify(db, null, 2));
-}
-
-// 1. Get Credits (Owner is Unlimited)
-function getCredits(user, isOwner) {
-  if (isOwner) return "UNLIMITED"; 
-  if (!db.users[user]) db.users[user] = { credits: 1 }; // 1 Free Credit for strangers
-  return db.users[user].credits;
-}
-
-// 2. Use Credit (Owner bypasses)
 function useCredit(user, isOwner) {
-  if (isOwner) return true; // Owner never uses credits
-  if (getCredits(user, false) > 0) {
-    db.users[user].credits -= 1;
+  if (isOwner) return true;
+  if (!db.users[user]) db.users[user] = { credits: 3 }; // 3 Free credits
+  if (db.users[user].credits > 0) {
+    db.users[user].credits--;
     saveDB();
     return true;
   }
@@ -56,14 +78,15 @@ const app = express();
 let sock = null;
 let qrDataURL = null;
 let connectionStatus = 'Disconnected';
-let ownerJid = null; // Will be auto-filled on login
+let ownerJid = null;
 
 app.get('/', (req, res) => res.send(`
   <html><head><meta http-equiv="refresh" content="5"></head>
   <body style="text-align:center; padding:50px; font-family:sans-serif;">
-    <h1>🤖 Meraj Auto-Bot</h1>
+    <h1>🤖 Meraj Ultimate Bot V2</h1>
     <p>Status: <strong>${connectionStatus}</strong></p>
     <p>Owner: <strong>${ownerJid ? "✅ Detected" : "Waiting..."}</strong></p>
+    <p>Active API Keys: ${apiKeys.length}</p>
     ${connectionStatus !== 'Connected' ? '<a href="/qr">Scan QR</a>' : '✅ System Online'}
   </body></html>
 `));
@@ -79,7 +102,6 @@ app.get('/qr', (req, res) => {
 // ==================== BOT LOGIC ====================
 async function start() {
   if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER);
-  
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -94,146 +116,206 @@ async function start() {
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
-    
-    if (qr) {
-      console.log('✨ QR Generated');
-      qrDataURL = await QRCode.toDataURL(qr);
-      connectionStatus = 'Scan QR';
-    }
-
+    if (qr) { qrDataURL = await QRCode.toDataURL(qr); connectionStatus = 'Scan QR'; }
     if (connection === 'close') {
       const reason = lastDisconnect?.error?.output?.statusCode;
-      console.log(`⚠️ Connection closed: ${reason}`);
-      connectionStatus = 'Disconnected';
-      // Only wipe if logged out (401)
       if (reason === DisconnectReason.loggedOut) {
-        console.log('❌ Logged out. Wiping session.');
         fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
         ownerJid = null;
       }
       setTimeout(start, 3000);
-    } 
-    
-    else if (connection === 'open') {
-      console.log('✅ Connected!');
+    } else if (connection === 'open') {
       connectionStatus = 'Connected';
-      
-      // AUTO-DETECT OWNER from Session
-      // sock.user.id comes like "917001...@s.whatsapp.net:5" -> We clean it
-      if (sock.user && sock.user.id) {
-        ownerJid = sock.user.id.split(':')[0] + "@s.whatsapp.net";
-        console.log(`👑 OWNER AUTO-DETECTED: ${ownerJid}`);
-      }
+      if (sock.user?.id) ownerJid = sock.user.id.split(':')[0] + "@s.whatsapp.net";
+      console.log(`👑 Owner: ${ownerJid}`);
     }
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ==================== MESSAGE HANDLER ====================
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0];
     if (!msg.message) return;
-    
     const from = msg.key.remoteJid;
-    // CRITICAL: Check if message is FROM ME (The Owner)
     const isOwner = msg.key.fromMe || (ownerJid && from === ownerJid);
     
-    // 1. Get Text
-    const text = msg.message.conversation || 
-                 msg.message.extendedTextMessage?.text || 
-                 msg.message.imageMessage?.caption || "";
-    
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || "";
     if (!text.startsWith('.')) return;
 
     const command = text.split(' ')[0].toLowerCase();
     const args = text.split(' ').slice(1).join(' ');
-
-    // 2. Get Context (Reply)
+    const reply = (txt) => sock.sendMessage(from, { text: txt }, { quoted: msg });
     const quotedMsg = msg.message.extendedTextMessage?.contextInfo?.quotedMessage;
     const quotedText = quotedMsg?.conversation || quotedMsg?.extendedTextMessage?.text || "";
-    
-    const reply = (txt) => sock.sendMessage(from, { text: txt }, { quoted: msg });
 
-    console.log(`📩 Cmd: ${command} | Sender: ${isOwner ? "OWNER" : "User"}`);
+    console.log(`📩 Cmd: ${command}`);
 
-    // --- COMMANDS ---
+    // ==================== 🧠 CORE AI COMMANDS ====================
 
-    // 1. .ask (Context Aware)
     if (command === '.ask') {
-      if (!args && !quotedText) return reply("❌ Usage: .ask [query] (or reply to text)");
+      if (!useCredit(from, isOwner)) return reply("❌ 0 Credits.");
+      if (!args && !quotedText) return reply("❓ Ask something.");
       
-      if (!useCredit(from, isOwner)) return reply("❌ 0 Credits. Ask owner for more.");
+      const knowledge = JSON.stringify(db.knowledge);
+      let prompt = `System: You are Meraj AI. You have saved knowledge: ${knowledge}.\n`;
+      if (quotedText) prompt += `Context: "${quotedText}"\n`;
+      prompt += `User: ${args}`;
 
-      try {
-        const genAI = new GoogleGenerativeAI(API_KEY);
-        // Using 'gemini-flash-latest' (Change to 'gemini-pro' if flash fails)
-        const model = genAI.getGenerativeModel({ model: "gemini-flash-latest" });
-
-        const knowledgeDump = JSON.stringify(db.knowledge);
-        let finalPrompt = `System: You are Meraj AI. Knowledge Base: ${knowledgeDump}.\n`;
-        
-        if (quotedText) finalPrompt += `\nCONTEXT (User Replied to):\n"${quotedText}"\n\n`;
-        finalPrompt += `QUESTION: ${args}`;
-
-        const result = await model.generateContent(finalPrompt);
-        await reply(result.response.text());
-        
-      } catch (err) {
-        reply("❌ AI Error: " + err.message);
-      }
+      reply(await generateSmartAI(prompt));
     }
 
-    // 2. .save (Memory)
+    // ==================== 💾 MEMORY SYSTEM ====================
+
     else if (command === '.save') {
-      if (!quotedText) return reply("❌ Reply to a message to save it.");
+      if (!quotedText) return reply("❌ Reply to a text to save it.");
       if (!args) return reply("❌ Usage: .save [name]");
-      
       db.knowledge[args.toLowerCase()] = quotedText;
       saveDB();
-      reply(`✅ Saved "${args}" to memory.`);
+      reply(`💾 Saved as "${args}".`);
     }
 
-    // 3. .credit (Owner Only)
+    else if (command === '.get') {
+      if (!args) return reply("❌ Usage: .get [name]");
+      const val = db.knowledge[args.toLowerCase()];
+      reply(val ? `📂 *${args}*:\n${val}` : "❌ Not found.");
+    }
+
+    else if (command === '.list') {
+      const keys = Object.keys(db.knowledge);
+      reply(keys.length > 0 ? `📚 *Saved Items:*\n${keys.join('\n')}` : "❌ Memory empty.");
+    }
+
+    else if (command === '.delete') {
+      if (!args) return reply("❌ Usage: .delete [name]");
+      if (db.knowledge[args.toLowerCase()]) {
+        delete db.knowledge[args.toLowerCase()];
+        saveDB();
+        reply(`🗑️ Deleted "${args}".`);
+      } else reply("❌ Not found.");
+    }
+
+    // ==================== 🛠️ UTILITY COMMANDS ====================
+
+    else if (command === '.wiki') {
+      if (!args) return reply("❌ Usage: .wiki [query]");
+      reply(await generateSmartAI(`Summarize this Wikipedia topic in 3 paragraphs: ${args}`));
+    }
+
+    else if (command === '.math') {
+      if (!args) return reply("❌ Usage: .math [expression]");
+      reply(await generateSmartAI(`Solve this math problem step-by-step: ${args}`));
+    }
+
+    else if (command === '.weather') {
+      if (!args) return reply("❌ Usage: .weather [city]");
+      reply(await generateSmartAI(`Give me a fake, funny weather forecast style prediction for: ${args}`));
+    }
+
+    else if (command === '.pass') {
+      const len = parseInt(args) || 12;
+      const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*";
+      let pass = "";
+      for(let i=0; i<len; i++) pass += chars.charAt(Math.floor(Math.random() * chars.length));
+      reply(`🔑 Pass: ${pass}`);
+    }
+
+    else if (command === '.quote') {
+      reply(await generateSmartAI("Give me a random inspirational quote."));
+    }
+
+    else if (command === '.fact') {
+      reply(await generateSmartAI("Tell me a random interesting fact."));
+    }
+
+    else if (command === '.lyrics') {
+      if (!args) return reply("❌ Usage: .lyrics [song name]");
+      reply(await generateSmartAI(`Find the lyrics for the song: ${args}`));
+    }
+
+    // ==================== 🎲 FUN COMMANDS ====================
+
+    else if (command === '.roast') {
+      const target = quotedText ? `this message: "${quotedText}"` : (args || "me");
+      reply(await generateSmartAI(`Roast ${target} brutally but funny.`));
+    }
+
+    else if (command === '.compliment') {
+      const target = quotedText ? `this message: "${quotedText}"` : (args || "me");
+      reply(await generateSmartAI(`Give a very sweet compliment to ${target}.`));
+    }
+
+    else if (command === '.joke') {
+      reply(await generateSmartAI("Tell me a funny joke."));
+    }
+
+    else if (command === '.8ball') {
+      const answers = ["Yes", "No", "Maybe", "Ask again", "Definitely", "Don't count on it"];
+      reply(`🎱 ${answers[Math.floor(Math.random() * answers.length)]}`);
+    }
+
+    else if (command === '.coin') {
+      reply(Math.random() > 0.5 ? "🪙 Heads" : "🪙 Tails");
+    }
+
+    // ==================== 👑 OWNER & SYSTEM ====================
+
     else if (command === '.credit') {
-      if (!isOwner) return reply("🛑 Owner Only Command.");
-      
-      // We need to find WHO to give credits to.
-      // 1. Check if replying to someone
+      if (!isOwner) return reply("🛑 Owner Only.");
       const target = msg.message.extendedTextMessage?.contextInfo?.participant;
-      
-      if (!target) return reply("❌ Reply to a user's message to give credits.");
-      
-      const amount = parseInt(args) || 5;
+      if (!target) return reply("❌ Reply to user.");
+      const amt = parseInt(args) || 10;
       if (!db.users[target]) db.users[target] = { credits: 0 };
-      db.users[target].credits += amount;
+      db.users[target].credits += amt;
       saveDB();
-      
-      reply(`✅ Gave ${amount} credits to that user.`);
+      reply(`✅ Gave ${amt} credits.`);
     }
 
-    // 4. .balance
-    else if (command === '.balance') {
-      const c = getCredits(from, isOwner);
-      reply(`💳 Credits: ${c}`);
+    else if (command === '.broadcast') {
+      if (!isOwner) return reply("🛑 Owner Only.");
+      reply("⚠️ Broadcast feature requires database of all chat IDs (not implemented to prevent spam bans).");
     }
 
-    // 5. .help
+    else if (command === '.alive') {
+      const mem = process.memoryUsage().rss / 1024 / 1024;
+      reply(`🤖 *SYSTEM STATUS*\n🔋 Uptime: ${Math.floor(process.uptime())}s\n🧠 RAM: ${mem.toFixed(2)}MB\n🔑 API Keys: ${apiKeys.length}`);
+    }
+
     else if (command === '.help') {
       reply(`
-🤖 *MERAJ BOT* ----------------
-🔹 .ask [query] (AI)
-🔹 .save [name] (Save Info)
-🔹 .balance (Check Credits)
-🔹 .ping (Test)
-${isOwner ? "\n👑 *Owner Cmds:*\n🔹 .credit [amount] (Reply to user)" : ""}
+🤖 *MERAJ BOT V2 COMMANDS*
+
+🧠 *AI & Memory*
+.ask [query] - Chat with AI
+.save [name] - Save quoted text
+.get [name] - Read saved text
+.list - List all saved items
+.delete [name] - Delete item
+
+🛠️ *Tools*
+.wiki [query] - Wikipedia Summary
+.math [expr] - Solve Math
+.pass [len] - Gen Password
+.lyrics [song] - Find Lyrics
+.weather [city] - Forecast
+
+🎲 *Fun*
+.roast - Roast someone
+.compliment - Be nice
+.joke - Random Joke
+.8ball - Fortune Teller
+.coin - Flip Coin
+.fact / .quote - Random info
+
+⚙️ *System*
+.balance - Check credits
+.alive - System stats
+.ping - Pong!
 `);
     }
 
     else if (command === '.ping') reply("🏓 Pong!");
-
   });
 }
 
-// Start
 app.listen(PORT, () => console.log(`🌍 Server on port ${PORT}`));
 start();
