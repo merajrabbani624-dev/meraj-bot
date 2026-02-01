@@ -1,7 +1,7 @@
 {
-  "name": "meraj-render-bot",
-  "version": "6.0.0",
-  "description": "Fixed Version Bot",
+  "name": "meraj-railway-bot",
+  "version": "1.0.0",
+  "description": "Railway WhatsApp Bot",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
