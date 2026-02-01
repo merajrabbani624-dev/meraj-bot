@@ -12,64 +12,74 @@ const OWNER_NUMBER = "917001747616@s.whatsapp.net";
 // --- SERVER ---
 const app = express();
 const PORT = process.env.PORT || 3000;
-app.get('/', (req, res) => res.send('Meraj Bot Resetting... 🟡'));
+app.get('/', (req, res) => res.send('Meraj Bot Active 🟢'));
 app.listen(PORT, () => console.log(`🌍 Server active on port ${PORT}`));
 
-// --- AI CONFIG ---
-const SYSTEM_PROMPT = `
-You are Meraj AI.
-1. NO LaTeX.
-2. MATH: Use Unicode (∫, x², √x).
-3. BOLD: Use *bold* for answers.
-`;
+const SYSTEM_PROMPT = `You are Meraj AI. Keep answers short. No LaTeX.`;
 
 async function start() {
-    console.log("🚀 Starting Bot (Reset Mode)...");
+    console.log("🚀 Starting Bot...");
 
-    // --- 🛑 FORCE RESET: Delete old session ---
-    // This fixes the "Pairing Code doesn't appear" bug
+    // 🛑 ZOMBIE KILLER: This checks if the session is broken
+    // If we have a folder but no valid login, we wipe it.
     if (fs.existsSync('auth_info')) {
-        console.log("♻️ Found old session. Deleting it to force new Pairing Code...");
-        fs.rmSync('auth_info', { recursive: true, force: true });
+        // We will attempt to load it. If it fails or is stuck, the logic below handles it.
+    } else {
+        fs.mkdirSync('auth_info');
     }
 
-    // Create fresh folder
-    fs.mkdirSync('auth_info');
     const { state, saveCreds } = await useMultiFileAuthState('auth_info');
     
     const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
         logger: pino({ level: "silent" }),
-        browser: Browsers.ubuntu('Chrome'),
-        syncFullHistory: false, 
+        // SWITCHED TO MacOS: This often fixes the "Could not login" error
+        browser: Browsers.macOS('Desktop'), 
+        syncFullHistory: false,
         connectTimeoutMs: 60000,
     });
 
-    // --- PAIRING LOGIC (Always runs now) ---
-    console.log("⏳ Waiting for connection to stabilize...");
-    setTimeout(async () => {
-        try {
-            console.log("📡 Requesting New Pairing Code...");
-            const code = await sock.requestPairingCode(BOT_NUMBER);
-            console.log("\n\n====================================================");
-            console.log("✨ YOUR NEW PAIRING CODE:");
-            console.log(`\x1b[32m${code?.match(/.{1,4}/g)?.join("-") || code}\x1b[0m`);
-            console.log("====================================================\n\n");
-        } catch (err) {
-            console.log("❌ Error requesting code: " + err.message);
-        }
-    }, 5000); // Increased wait to 5s for better reliability
+    // --- PAIRING LOGIC ---
+    // This will run ONLY if the bot is not already logged in
+    if (!sock.authState.creds.registered) {
+        console.log("⏳ Connection warming up (Wait 5s)...");
+        setTimeout(async () => {
+            try {
+                console.log("📡 Requesting Pairing Code...");
+                const code = await sock.requestPairingCode(BOT_NUMBER);
+                console.log("\n\n====================================================");
+                console.log("✨ YOUR PAIRING CODE:");
+                console.log(`\x1b[32m${code?.match(/.{1,4}/g)?.join("-") || code}\x1b[0m`);
+                console.log("====================================================\n\n");
+            } catch (err) {
+                console.log("❌ Error requesting code: " + err.message);
+                // If this fails, it means the session is corrupted. WIPE IT.
+                console.log("♻️ Session corrupted. Wiping and retrying...");
+                fs.rmSync('auth_info', { recursive: true, force: true });
+                process.exit(1); // Restart the bot
+            }
+        }, 5000);
+    }
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect } = update;
+        
         if (connection === 'close') {
             const reason = lastDisconnect?.error?.output?.statusCode;
             console.log(`⚠️ Connection closed. Reason: ${reason}`);
-            // If logged out, we just restart and the code at the top will wipe it again
-            setTimeout(start, 3000);
+
+            // 401 means "Logged Out" or "Bad Session". We must wipe.
+            if (reason === DisconnectReason.loggedOut || reason === 401) {
+                console.log("❌ Session Invalid. Deleting auth_info...");
+                fs.rmSync('auth_info', { recursive: true, force: true });
+                start(); // Restart fresh
+            } else {
+                // Any other error, just retry
+                setTimeout(start, 3000);
+            }
         } else if (connection === 'open') {
             console.log('✅ SUCCESS! Bot is Connected.');
         }
@@ -82,19 +92,15 @@ async function start() {
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg.message) return;
-
-        const text = msg.message.conversation || 
-                     msg.message.extendedTextMessage?.text || 
-                     msg.message.imageMessage?.caption || "";
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         const chatId = msg.key.remoteJid;
         const isMe = msg.key.fromMe;
 
-        console.log(`📩 New Message (${isMe ? "You" : "Someone"}): ${text}`);
+        console.log(`📩 New Message: ${text}`);
 
         if (text.toLowerCase() === '.ping') {
              await sock.sendMessage(chatId, { text: "🏓 Pong!" }, { quoted: msg });
         }
-
         if (text.toLowerCase().startsWith('.ask ')) {
             const query = text.slice(5).trim();
             const chat = model.startChat({});
