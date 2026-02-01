@@ -4,168 +4,108 @@ const {
   useMultiFileAuthState,
   fetchLatestBaileysVersion,
   Browsers,
-  makeCacheableSignalKeyStore
+  makeCacheableSignalKeyStore,
+  delay
 } = require('@whiskeysockets/baileys');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const express = require('express');
 const QRCode = require('qrcode');
 const pino = require('pino');
 const fs = require('fs');
-const path = require('path');
 
 // ==================== CONFIGURATION ====================
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY || '';
 const AUTH_FOLDER = './auth_info';
 
-// Hardcoded fallback WhatsApp version (CRITICAL FIX for Cloud Hosting)
-// This prevents the bot from crashing if the version check fails
+// FIXED VERSION: Prevents 405/515 handshake errors
 const FALLBACK_WA_VERSION = [2, 3000, 1015901307];
 
-// ==================== GLOBAL STATE ====================
+// ==================== STATE ====================
 let sock = null;
 let qrDataURL = null;
 let connectionStatus = 'Disconnected';
 
-// ==================== EXPRESS SERVER ====================
+// ==================== SERVER ====================
 const app = express();
 
 app.get('/', (req, res) => {
   res.send(`
-    <!DOCTYPE html>
     <html>
-    <head>
-      <title>WhatsApp Bot Status</title>
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <style>
-        body { font-family: sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; background: #f0f2f5; }
-        .container { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); text-align: center; }
-        h1 { color: #25D366; }
-        .status { padding: 15px; border-radius: 8px; margin: 20px 0; font-weight: bold; }
-        .status.connected { background: #d4edda; color: #155724; }
-        .status.disconnected { background: #f8d7da; color: #721c24; }
-        .btn { display: inline-block; padding: 12px 30px; background: #25D366; color: white; text-decoration: none; border-radius: 6px; margin: 10px; }
-        .btn:hover { background: #128C7E; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>🤖 WhatsApp Bot Dashboard</h1>
-        <div class="status ${connectionStatus === 'Connected' ? 'connected' : 'disconnected'}">
-          Status: ${connectionStatus}
-        </div>
-        <p><strong>Commands:</strong> .ping, .ask [question]</p>
-        <a href="/qr" class="btn">📱 Scan QR Code</a>
-        <a href="/restart" class="btn" style="background: #ff6b6b;">🔄 Force Restart</a>
-      </div>
-    </body>
+      <head><title>Meraj Bot</title><meta http-equiv="refresh" content="10"></head>
+      <body style="font-family:sans-serif; text-align:center; padding:50px;">
+        <h1>🤖 Meraj Bot is Active</h1>
+        <p>Status: <strong>${connectionStatus}</strong></p>
+        ${connectionStatus !== 'Connected' ? '<a href="/qr">Scan QR Code</a>' : '✅ System Normal'}
+      </body>
     </html>
   `);
 });
 
 app.get('/qr', (req, res) => {
   if (qrDataURL && connectionStatus !== 'Connected') {
-    res.send(`
-      <html>
-        <body style="display:flex; justify-content:center; align-items:center; height:100vh; background:#222;">
-          <div style="text-align:center; background:white; padding:20px; border-radius:10px;">
-            <h2 style="color:#25D366;">Scan with WhatsApp</h2>
-            <img src="${qrDataURL}" style="border:5px solid #25D366; border-radius:10px; width:300px;" />
-            <p>Settings > Linked Devices > Link a Device</p>
-          </div>
-        </body>
-      </html>
-    `);
+    res.send(`<div style="text-align:center;"><img src="${qrDataURL}" style="border:5px solid green; width:300px;" /></div>`);
   } else {
-    res.send('<h2 style="text-align:center; margin-top:50px;">✅ Bot is connected or QR not ready yet. <br> <a href="/">Go Back</a></h2>');
+    res.send('<h2>Bot is already connected or reloading...</h2>');
   }
 });
 
-app.get('/restart', async (req, res) => {
-  res.send('<h2>🔄 Restarting bot and clearing session...</h2><script>setTimeout(() => window.location.href="/", 5000)</script>');
-  await deleteAuthFolder();
-  process.exit(0); // This forces the cloud platform to restart the bot
-});
+// ==================== CORE LOGIC ====================
 
-// ==================== HELPER FUNCTIONS ====================
-
-async function deleteAuthFolder() {
+async function getVersion() {
   try {
-    if (fs.existsSync(AUTH_FOLDER)) {
-      fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
-      console.log('✅ Auth folder deleted successfully');
-    }
-  } catch (error) {
-    console.error('❌ Error deleting auth folder:', error);
-  }
-}
-
-async function getBaileysVersion() {
-  try {
-    console.log('🔍 Fetching latest WhatsApp version...');
     const { version } = await fetchLatestBaileysVersion();
-    console.log(`✅ Fetched version: ${version.join('.')}`);
     return version;
-  } catch (error) {
-    console.warn('⚠️ Network failed. Using HARDCODED Fallback version.');
+  } catch {
     return FALLBACK_WA_VERSION;
   }
 }
 
-// ==================== AI SETUP ====================
-let model = null;
-if (API_KEY) {
-  try {
-    const genAI = new GoogleGenerativeAI(API_KEY);
-    model = genAI.getGenerativeModel({
-      model: 'gemini-flash-preview',
-      systemInstruction: `You are a WhatsApp assistant. No LaTeX. Use Unicode for math.`
-    });
-    console.log('✅ Gemini AI initialized');
-  } catch (err) {
-    console.error('❌ AI Init Failed:', err.message);
-  }
-}
-
-// ==================== WHATSAPP CONNECTION ====================
-
 async function connectToWhatsApp() {
+  // 1. DO NOT DELETE AUTH_FOLDER ON START
+  // Only create if missing
+  if (!fs.existsSync(AUTH_FOLDER)) fs.mkdirSync(AUTH_FOLDER);
+
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_FOLDER);
-  const version = await getBaileysVersion();
+  const version = await getVersion();
 
   sock = makeWASocket({
     version,
-    printQRInTerminal: false,
     auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }))
     },
+    printQRInTerminal: false,
     logger: pino({ level: 'silent' }),
-    browser: Browsers.ubuntu('Chrome'), // Ubuntu signature reduces bans
+    browser: Browsers.ubuntu('Chrome'),
     connectTimeoutMs: 60000,
+    retryRequestDelayMs: 2000,
   });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('✨ QR Code generated. Check /qr route.');
+      console.log('✨ New QR Code generated.');
       qrDataURL = await QRCode.toDataURL(qr);
-      connectionStatus = 'Scan QR Code';
+      connectionStatus = 'Scan QR';
     }
 
     if (connection === 'close') {
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      console.log(`⚠️ Connection closed. Code: ${statusCode}`);
+      const reason = lastDisconnect?.error?.output?.statusCode;
+      console.log(`⚠️ Connection closed. Reason: ${reason}`);
       connectionStatus = 'Disconnected';
       qrDataURL = null;
 
-      // FIX: If 405 (Method Not Allowed) or 401 (Logged Out), WIPE SESSION
-      if (statusCode === 405 || statusCode === 401 || statusCode === DisconnectReason.loggedOut) {
-        console.log('🛑 Critical Error (405/401). Deleting session and restarting...');
-        await deleteAuthFolder();
-        setTimeout(connectToWhatsApp, 2000);
+      // CRITICAL FIX: Only wipe if LOGGED OUT (401). 
+      // IGNORE 515, 405, 408 - Just reconnect.
+      if (reason === DisconnectReason.loggedOut) {
+        console.log('❌ Device Logged Out. Clearing session...');
+        fs.rmSync(AUTH_FOLDER, { recursive: true, force: true });
+        connectToWhatsApp();
       } else {
+        // For 515/405/Stream Errors, we just restart WITHOUT deleting session
+        console.log('🔄 Network glitch. Reconnecting in 3s...');
         setTimeout(connectToWhatsApp, 3000);
       }
     } else if (connection === 'open') {
@@ -177,38 +117,37 @@ async function connectToWhatsApp() {
 
   sock.ev.on('creds.update', saveCreds);
 
+  // --- MESSAGES ---
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const msg = messages[0];
     if (!msg.message) return;
-
+    
+    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
     const from = msg.key.remoteJid;
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || '';
 
     if (!text) return;
-    console.log(`📩 New Message: ${text}`);
 
-    // Command: .ping
     if (text.toLowerCase() === '.ping') {
       await sock.sendMessage(from, { text: '🏓 Pong!' }, { quoted: msg });
     }
-
-    // Command: .ask
+    
+    // AI COMMAND
     else if (text.toLowerCase().startsWith('.ask ')) {
+      if (!API_KEY) return sock.sendMessage(from, { text: '❌ No API_KEY found.' });
+      
       const query = text.slice(5).trim();
-      if (!model) return sock.sendMessage(from, { text: '❌ AI API Key not set.' });
-
-      await sock.sendMessage(from, { react: { text: "🤔", key: msg.key } });
       try {
+        const genAI = new GoogleGenerativeAI(API_KEY);
+        const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
         const result = await model.generateContent(query);
         await sock.sendMessage(from, { text: result.response.text() }, { quoted: msg });
       } catch (err) {
-        await sock.sendMessage(from, { text: '❌ Error: ' + err.message }, { quoted: msg });
+        await sock.sendMessage(from, { text: 'Error: ' + err.message }, { quoted: msg });
       }
     }
   });
 }
 
-// ==================== START ====================
-app.listen(PORT, () => console.log(`🌍 Server running on port ${PORT}`));
+// Start
+app.listen(PORT, () => console.log(`🌍 Server on port ${PORT}`));
 connectToWhatsApp();
-
